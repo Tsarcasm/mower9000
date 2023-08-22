@@ -1,6 +1,8 @@
 #include <Adafruit_BNO08x.h>
 
+#include "maths.h"
 #include "motordriver.h"
+
 #define RAD_TO_DEG 57.295779513082320876798154814105
 #define BNO08X_RESET -1
 
@@ -16,7 +18,7 @@ sh2_SensorValue_t sensorValue;
 
 L298N motor(L_EN1, L_IN1, L_IN2, R_EN1, R_IN1, R_IN2);
 
-void error(const char* msg) {
+void error(const char *msg) {
     digitalWrite(LED_BUILTIN, LOW);
     while (true) {
         Serial.println("Error");
@@ -27,7 +29,6 @@ void error(const char* msg) {
 
 uint32_t start_time = 0;
 void setup(void) {
-    Serial.begin(115200);
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LOW);
 
@@ -38,7 +39,7 @@ void setup(void) {
         error("Failed to find BNO08x chip");
     }
 
-    Serial.println("BNO08x Found!");
+    // Serial.println("BNO08x Found!");
 
     if (!bno08x.enableReport(SH2_ROTATION_VECTOR)) {
         error("Could not enable game vector");
@@ -54,66 +55,43 @@ struct PIDConstants {
     float Kd;  // Derivative gain
 };
 
-PIDConstants pidConstants = {0.03, 0.02, 0.005};  // These values are placeholders. You should tune them accordingly.
+struct PIDState {
+    float integral;
+    float previousError;
+};
 
-float computeP(float error) {
-    return pidConstants.Kp * error;
+float computeP(float error, PIDConstants C) {
+    return C.Kp * error;
 }
 
-float computeI(float error, float deltaTime) {
-    static float integral = 0;
-    integral += error * deltaTime;
-    return pidConstants.Ki * integral;
+float computeI(float error, float deltaTime, PIDConstants C, PIDState &state) {
+    state.integral += error * deltaTime;
+    return C.Ki * state.integral;
 }
 
-float computeD(float error, float deltaTime) {
-    static float previousError = 0;
-    float derivative = (error - previousError) / deltaTime;
-    previousError = error;
-    return pidConstants.Kd * derivative;
+float computeD(float error, float deltaTime, PIDConstants C, PIDState &state) {
+    float derivative = (error - state.previousError) / deltaTime;
+    state.previousError = error;
+    return C.Kd * derivative;
 }
 
-float computePID(float error, float deltaTime) {
-    float p = computeP(error);
-    float i = computeI(error, deltaTime);
-    float d = computeD(error, deltaTime);
-    Serial.print("P: ");
-    Serial.print(p);
-    Serial.print(" I: ");
-    Serial.print(i);
-    Serial.print(" D: ");
-    Serial.print(d);
-    Serial.print(" Total: ");
-    Serial.println(p + i + d);
+float computePID(float error, float deltaTime, PIDConstants c, PIDState &state) {
+    float p = computeP(error, c);
+    float i = computeI(error, deltaTime, c, state);
+    float d = computeD(error, deltaTime, c, state);
+    // Serial.print("P: ");
+    // Serial.print(p);
+    // Serial.print(" I: ");
+    // Serial.print(i);
+    // Serial.print(" D: ");
+    // Serial.print(d);
+    // Serial.print(" Total: ");
+    // Serial.println(p + i + d);
     return p + i + d;
 }
 
 // Desired yaw value
 float setPoint = 0;
-
-struct euler_t {
-    float yaw;
-    float pitch;
-    float roll;
-};
-euler_t quaternionToEuler(float qr, float qi, float qj, float qk, bool degrees = false) {
-    euler_t ypr;
-    float sqr = sq(qr);
-    float sqi = sq(qi);
-    float sqj = sq(qj);
-    float sqk = sq(qk);
-
-    ypr.yaw = atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr));
-    ypr.pitch = asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr));
-    ypr.roll = atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr));
-
-    if (degrees) {
-        ypr.yaw *= RAD_TO_DEG;
-        ypr.pitch *= RAD_TO_DEG;
-        ypr.roll *= RAD_TO_DEG;
-    }
-    return ypr;
-}
 
 double modified_sigmoid(double x, double k) {
     return x / (x + (1.0 - x) * exp(-k * x));
@@ -121,12 +99,79 @@ double modified_sigmoid(double x, double k) {
 
 uint32_t last_report = 0;
 
-void loop() {
-    if (millis() - start_time < 10000) {
-        motor.setBothSpeeds(0);
-        return;
-    }
+enum State {
+    INIT,
+    TURN,
+    STRAIGHT,
+    CALIBRATE,
+    CAL_TURN,
+    CAL_STRAIGHT
+};
+State state = INIT;
 
+PIDConstants driveConstants = {0.06, 0.02, 0.005};
+PIDState driveState = {0, 0};
+PIDConstants turnConstants = {0.06, 0.02, 0.005};
+PIDState turnState = {0, 0};
+
+uint32_t last_time = 0;
+uint32_t drive_start_ms = 0;
+float start_x, start_y;
+float end_x, end_y;
+
+void setup1() {
+    Serial.begin(115200);
+}
+
+volatile float gps_x = 0;
+volatile float gps_y = 0;
+
+void loop1() {
+    if (Serial.available()) {
+        while (Serial.available()) {
+            auto str = Serial.readStringUntil('\n');
+            // String format:
+            // 1.0247609093785286,34.68833666825958,1692705059400,99
+            // x,y,timestamp,jitter
+            float x = 0;
+            float y = 0;
+            uint64_t timestamp = 0;
+            uint64_t jitter = 0;
+            sscanf(str.c_str(), "%f,%f,%llu,%llu", &x, &y, &timestamp, &jitter);
+            Serial.print(x);
+            Serial.print(",");
+            Serial.print(y);
+            Serial.print(",");
+            Serial.print(timestamp);
+            Serial.print(",");
+            Serial.println(jitter);
+            gps_x = x;
+            gps_y = y;
+        }
+    }
+}
+
+
+
+void turn_to_face(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_constants, PIDState &pid_state) {
+    // Turn to reduce yaw to zero
+    float error = yaw - target;
+    float controlSpeed = computePID(error, deltaTime / 1000.0f, turnConstants, turnState);
+    bool isClockwise = controlSpeed > 0;
+    controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
+    motor.setBothSpeeds(controlSpeed);
+    // Apply the control
+    if (isClockwise) {
+        motor.setDirectionA(L298N::Direction::BACKWARD);
+        motor.setDirectionB(L298N::Direction::FORWARD);
+    } else {
+        motor.setDirectionB(L298N::Direction::BACKWARD);
+        motor.setDirectionA(L298N::Direction::FORWARD);
+    }
+}
+
+
+void loop() {
     if (bno08x.wasReset()) {
         Serial.println("Sensor was reset ");
         if (!bno08x.enableReport(SH2_ROTATION_VECTOR)) {
@@ -140,49 +185,82 @@ void loop() {
         }
         return;
     }
-    digitalWrite(LED_BUILTIN, HIGH);
+
     auto rotvec = sensorValue.un.rotationVector;
-
+    float yaw = 0;
     if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
-        uint32_t interval = millis() - last_report;
-        float deltaTime = interval / 1000.0;  // Convert to seconds
-
-        last_report = millis();
         auto ypr = quaternionToEuler(rotvec.real, rotvec.i, rotvec.j, rotvec.k, true);
-        const float yaw = ypr.yaw;
-        const float error = yaw;  // abs(yaw);
-        // bool isClockwise = yaw > 0;
+        yaw = ypr.yaw;
+    } else {
+        return;
+    }
+    uint32_t deltaTime = millis() - last_time;
+    last_time = millis();
 
-        float controlSpeed = computePID(error, deltaTime);
+    switch (state) {
+        case INIT:
+            if (millis() > 2000 && gps_x != 0) state = TURN;
+            break;
+        case TURN: {
+            // Turn to reduce yaw to zero
+            float error = yaw;
+            if (abs(error) < 3) {
+                state = STRAIGHT;
+                drive_start_ms = millis();
+                start_x = gps_x;
+                start_y = gps_y;
+                break;
+            }
+            float controlSpeed = computePID(error, deltaTime / 1000.0f, turnConstants, turnState);
+            bool isClockwise = controlSpeed > 0;
+            controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
+            motor.setBothSpeeds(controlSpeed);
+            // Apply the control
+            if (isClockwise) {
+                motor.setDirectionA(L298N::Direction::BACKWARD);
+                motor.setDirectionB(L298N::Direction::FORWARD);
+            } else {
+                motor.setDirectionB(L298N::Direction::BACKWARD);
+                motor.setDirectionA(L298N::Direction::FORWARD);
+            }
+            break;
+        }
+        case STRAIGHT: {
+            // Drive straight
+            float error = yaw - setPoint;
+            float controlSpeed = computePID(error, deltaTime / 1000.0f, driveConstants, driveState);
+            bool isClockwise = controlSpeed > 0;
+            controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
+            // Serial.println(controlSpeed);
 
-        Serial.print("Yaw: ");
-        Serial.print(yaw);
-        Serial.print(" Error: ");
-        Serial.print(error);
-        Serial.print(" Control Output: ");
-        Serial.print(controlSpeed);
-        Serial.print(" Direction: ");
-        bool isClockwise = controlSpeed > 0;
-        Serial.println(isClockwise ? "Clockwise" : "Counter-clockwise");
-
-        controlSpeed = constrain(abs(controlSpeed), 0, 1);
-        controlSpeed = modified_sigmoid(controlSpeed, 5);
-        Serial.println(controlSpeed);
-        if (controlSpeed < 0.1) {
-            controlSpeed = 0;
+            motor.setBothDirections(L298N::Direction::FORWARD);
+            // Apply the control
+            if (isClockwise) {
+                motor.setSpeedA(1 - controlSpeed);
+                motor.setSpeedB(1);
+            } else {
+                motor.setSpeedA(1);
+                motor.setSpeedB(1 - controlSpeed);
+            }
+            if (millis() - drive_start_ms > 10000) {
+                state = CALIBRATE;
+                end_x = gps_x;
+                end_y = gps_y;
+            }
+            break;
         }
 
-        motor.setBothDirections(L298N::Direction::FORWARD);
-        // Apply the control
-        if (isClockwise) {
-            motor.setSpeedA(1 - controlSpeed);
-            // motor.setDirectionA(L298N::Direction::BACKWARD);
-            motor.setSpeedB(1);
-        } else {
-            motor.setSpeedA(1);
-            motor.setSpeedB(1 - controlSpeed);
-            // motor.setDirectionB(L298N::Direction::BACKWARD);
-        }
-        // motor.setBothSpeeds(controlSpeed);
+        case CALIBRATE: {
+            // Calculate our heading based on the GPS
+            float dx = end_x - start_x;
+            float dy = end_y - start_y;
+            float heading = atan2(dy, dx) * RAD_TO_DEG;
+            Serial.print("Heading: ");
+            Serial.println(heading);
+
+            motor.setBothSpeeds(0);
+            motor.setBothDirections(L298N::Direction::STOP);
+            // Serial.println(yaw);
+        } break;
     }
 }
