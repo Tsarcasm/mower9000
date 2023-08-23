@@ -97,6 +97,16 @@ double modified_sigmoid(double x, double k) {
     return x / (x + (1.0 - x) * exp(-k * x));
 }
 
+float fix_yaw(float yaw) {
+    // Get back in range [-180, 180]
+    if (yaw > 180) {
+        yaw -= 360;
+    } else if (yaw < -180) {
+        yaw += 360;
+    }
+    return yaw;
+}
+
 uint32_t last_report = 0;
 
 enum State {
@@ -107,7 +117,7 @@ enum State {
     CAL_TURN,
     CAL_STRAIGHT
 };
-State state = INIT;
+volatile State state = INIT;
 
 PIDConstants driveConstants = {0.06, 0.02, 0.005};
 PIDState driveState = {0, 0};
@@ -116,8 +126,9 @@ PIDState turnState = {0, 0};
 
 uint32_t last_time = 0;
 uint32_t drive_start_ms = 0;
-float start_x, start_y;
+float start_x = 0, start_y = 0;
 float end_x, end_y;
+float calibrated_yaw_offset = 0;
 
 void setup1() {
     Serial.begin(115200);
@@ -125,6 +136,7 @@ void setup1() {
 
 volatile float gps_x = 0;
 volatile float gps_y = 0;
+volatile uint32_t last_gps = 0;
 
 void loop1() {
     if (Serial.available()) {
@@ -144,14 +156,14 @@ void loop1() {
             Serial.print(",");
             Serial.print(timestamp);
             Serial.print(",");
-            Serial.println(jitter);
+            Serial.print(jitter);
+            Serial.println((int)state);
             gps_x = x;
             gps_y = y;
+            last_gps = millis();
         }
     }
 }
-
-
 
 void turn_to_face(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_constants, PIDState &pid_state) {
     // Turn to reduce yaw to zero
@@ -170,6 +182,24 @@ void turn_to_face(float target, float yaw, uint32_t deltaTime, PIDConstants &pid
     }
 }
 
+void go_straight(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_constants, PIDState &pid_state) {
+    // Drive straight
+    float error = fix_yaw(yaw - target);
+    float controlSpeed = computePID(error, deltaTime / 1000.0f, driveConstants, driveState);
+    bool isClockwise = controlSpeed > 0;
+    controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
+    // Serial.println(controlSpeed);
+
+    motor.setBothDirections(L298N::Direction::FORWARD);
+    // Apply the control
+    if (isClockwise) {
+        motor.setSpeedA(1 - controlSpeed);
+        motor.setSpeedB(1);
+    } else {
+        motor.setSpeedA(1);
+        motor.setSpeedB(1 - controlSpeed);
+    }
+}
 
 void loop() {
     if (bno08x.wasReset()) {
@@ -194,6 +224,13 @@ void loop() {
     } else {
         return;
     }
+
+    // Apply the calibrated yaw offset
+    yaw -= calibrated_yaw_offset;
+    yaw = fix_yaw(yaw);
+
+
+
     uint32_t deltaTime = millis() - last_time;
     last_time = millis();
 
@@ -201,66 +238,73 @@ void loop() {
         case INIT:
             if (millis() > 2000 && gps_x != 0) state = TURN;
             break;
-        case TURN: {
+        case TURN:
             // Turn to reduce yaw to zero
-            float error = yaw;
-            if (abs(error) < 3) {
+            if (abs(yaw) < 3) {
                 state = STRAIGHT;
                 drive_start_ms = millis();
-                start_x = gps_x;
-                start_y = gps_y;
                 break;
             }
-            float controlSpeed = computePID(error, deltaTime / 1000.0f, turnConstants, turnState);
-            bool isClockwise = controlSpeed > 0;
-            controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
-            motor.setBothSpeeds(controlSpeed);
-            // Apply the control
-            if (isClockwise) {
-                motor.setDirectionA(L298N::Direction::BACKWARD);
-                motor.setDirectionB(L298N::Direction::FORWARD);
-            } else {
-                motor.setDirectionB(L298N::Direction::BACKWARD);
-                motor.setDirectionA(L298N::Direction::FORWARD);
-            }
+            turn_to_face(0, yaw, deltaTime, turnConstants, turnState);
             break;
-        }
-        case STRAIGHT: {
-            // Drive straight
-            float error = yaw - setPoint;
-            float controlSpeed = computePID(error, deltaTime / 1000.0f, driveConstants, driveState);
-            bool isClockwise = controlSpeed > 0;
-            controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
-            // Serial.println(controlSpeed);
 
-            motor.setBothDirections(L298N::Direction::FORWARD);
-            // Apply the control
-            if (isClockwise) {
-                motor.setSpeedA(1 - controlSpeed);
-                motor.setSpeedB(1);
-            } else {
-                motor.setSpeedA(1);
-                motor.setSpeedB(1 - controlSpeed);
+        case STRAIGHT:
+            if (millis() - drive_start_ms > 3000 && start_x == 0 && start_y == 0) {
+                start_x = gps_x;
+                start_y = gps_y;
             }
-            if (millis() - drive_start_ms > 10000) {
+            if (millis() - drive_start_ms > 7500) {
                 state = CALIBRATE;
                 end_x = gps_x;
                 end_y = gps_y;
             }
+            go_straight(0, yaw, deltaTime, driveConstants, driveState);
             break;
-        }
 
         case CALIBRATE: {
             // Calculate our heading based on the GPS
             float dx = end_x - start_x;
             float dy = end_y - start_y;
             float heading = atan2(dy, dx) * RAD_TO_DEG;
+            calibrated_yaw_offset = heading;
             Serial.print("Heading: ");
             Serial.println(heading);
 
             motor.setBothSpeeds(0);
             motor.setBothDirections(L298N::Direction::STOP);
             // Serial.println(yaw);
+            state = CAL_TURN;
         } break;
+
+        case CAL_TURN: {
+            if (abs(yaw) < 5) {
+                state = CAL_STRAIGHT;
+                drive_start_ms = millis();
+            }
+            const float y = gps_y + 1;
+            const float target = constrain(y / 4, -1, 1) * 75;
+            turn_to_face(target, yaw, deltaTime, turnConstants, turnState);
+            break;
+        }
+
+        case CAL_STRAIGHT: {
+            // We want to drive on the y=0 line
+            // Calculate the error
+            const float y = gps_y + 1;
+            const float target = constrain(y / 4, -1, 1) * 75;
+            // const float target = -90;
+            Serial.print("Target: ");
+            Serial.println(target);
+            Serial.print("Yaw: ");
+            Serial.println(yaw);
+            if (millis() - drive_start_ms > 60000 || millis() - last_gps > 1500) {
+                motor.setBothSpeeds(0);
+                motor.setBothDirections(L298N::Direction::STOP);
+                break;
+            }
+            // go_straight(calculated_yaw, yaw, deltaTime, driveConstants, driveState);
+            go_straight(target, yaw, deltaTime, driveConstants, driveState);
+            break;
+        }
     }
 }

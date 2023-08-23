@@ -15,19 +15,19 @@ with open('output_file.txt', 'w') as file:
 
     # ssh copy the file to the remote device
     # first check we can connect to the remote device
-    response = os.system('ping -c 1 ' + remote)
-    if response == 0:
-        print('\033[32mDevice is up!\033[0m')
-        # copy the file to the remote device
-        os.system('scp ' + uf2 + ' pi@' + remote + ':' + remotepath)
-        os.system('scp ' + elf + ' pi@' + remote + ':' + remotepath)
-        print('\033[32mFile copied!\033[0m')
-        # Then run flash.sh on the remote device
-        os.system('ssh pi@' + remote + ' "cd ' + remotepath + '; ./flash.sh ' + uf2 + '"')
-        print('\033[32mFile flashed!\033[0m')
-    else:
-        print('\033[31mDevice is down!\033[0m')
-        sys.exit()
+    # response = os.system('ping -c 1 ' + remote)
+    # if response == 0:
+    # print('\033[32mDevice is up!\033[0m')
+    # copy the file to the remote device
+    os.system('scp ' + uf2 + ' pi@' + remote + ':' + remotepath)
+    os.system('scp ' + elf + ' pi@' + remote + ':' + remotepath)
+    print('\033[32mFile copied!\033[0m')
+    # Then run flash.sh on the remote device
+    os.system('ssh pi@' + remote + ' "cd ' + remotepath + '; ./flash.sh ' + uf2 + '"')
+    print('\033[32mFile flashed!\033[0m')
+    # else:
+    #     print('\033[31mDevice is down!\033[0m')
+    #     sys.exit()
     
 
     
