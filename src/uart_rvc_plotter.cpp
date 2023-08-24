@@ -201,6 +201,7 @@ void go_straight(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_
     }
 }
 
+
 void loop() {
     if (bno08x.wasReset()) {
         Serial.println("Sensor was reset ");
@@ -229,15 +230,19 @@ void loop() {
     yaw -= calibrated_yaw_offset;
     yaw = fix_yaw(yaw);
 
-
-
     uint32_t deltaTime = millis() - last_time;
     last_time = millis();
 
     switch (state) {
+        /*
+        Wait for the GPS to get a lock
+        */
         case INIT:
             if (millis() > 2000 && gps_x != 0) state = TURN;
             break;
+        /*
+        Turn to face what the magnetometer says is north (yaw = 0)
+        */
         case TURN:
             // Turn to reduce yaw to zero
             if (abs(yaw) < 3) {
@@ -247,7 +252,10 @@ void loop() {
             }
             turn_to_face(0, yaw, deltaTime, turnConstants, turnState);
             break;
-
+        /*
+        Drive straight for 7.5 seconds (facing north)
+        Take a start gps position at 3 seconds, and an end gps position at 7.5 seconds
+        */
         case STRAIGHT:
             if (millis() - drive_start_ms > 3000 && start_x == 0 && start_y == 0) {
                 start_x = gps_x;
@@ -260,7 +268,10 @@ void loop() {
             }
             go_straight(0, yaw, deltaTime, driveConstants, driveState);
             break;
-
+        /*
+        Reconcile the GPS position with the magnetometer heading
+        Calculate a yaw offset to apply to future magnetometer readings
+        */
         case CALIBRATE: {
             // Calculate our heading based on the GPS
             float dx = end_x - start_x;
@@ -274,11 +285,15 @@ void loop() {
             motor.setBothDirections(L298N::Direction::STOP);
             // Serial.println(yaw);
             state = CAL_TURN;
+            turnState = {0};
         } break;
-
+        /*
+        Turn to face the y=1 line
+        */
         case CAL_TURN: {
             if (abs(yaw) < 5) {
                 state = CAL_STRAIGHT;
+                driveState = {0};
                 drive_start_ms = millis();
             }
             const float y = gps_y + 1;
