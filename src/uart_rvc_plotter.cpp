@@ -107,6 +107,16 @@ float fix_yaw(float yaw) {
     return yaw;
 }
 
+float yaw_diff(float yaw1, float yaw2) {
+    float diff = yaw1 - yaw2;
+    if (diff > 180) {
+        diff -= 360;
+    } else if (diff < -180) {
+        diff += 360;
+    }
+    return diff;
+}
+
 uint32_t last_report = 0;
 
 enum State {
@@ -202,6 +212,9 @@ void go_straight(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_
 }
 
 
+point start_point = {0, 0};
+point target_point = {-20, -10};
+
 void loop() {
     if (bno08x.wasReset()) {
         Serial.println("Sensor was reset ");
@@ -277,7 +290,10 @@ void loop() {
             float dx = end_x - start_x;
             float dy = end_y - start_y;
             float heading = atan2(dy, dx) * RAD_TO_DEG;
+
             calibrated_yaw_offset = heading;
+            start_point = {gps_x, gps_y};
+
             Serial.print("Heading: ");
             Serial.println(heading);
 
@@ -291,28 +307,39 @@ void loop() {
         Turn to face the y=1 line
         */
         case CAL_TURN: {
-            if (abs(yaw) < 5) {
+            const float target = fix_yaw(calc_bearing({start_point, target_point}));
+
+            if (abs(yaw_diff(yaw, target)) < 8) {
                 state = CAL_STRAIGHT;
                 driveState = {0};
                 drive_start_ms = millis();
             }
-            const float y = gps_y + 1;
-            const float target = constrain(y / 4, -1, 1) * 75;
+            Serial.printf("Now (%f,%f), Target (%f,%f), Target: %f\r\n",
+                            gps_x, gps_y, target_point.x, target_point.y, target);
             turn_to_face(target, yaw, deltaTime, turnConstants, turnState);
             break;
         }
 
         case CAL_STRAIGHT: {
+            const line AB = {start_point, target_point};
+            const point pos = {gps_x, gps_y};
             // We want to drive on the y=0 line
             // Calculate the error
-            const float y = gps_y + 1;
-            const float target = constrain(y / 4, -1, 1) * 75;
+            const float distance = perpendicular_distance(AB, pos);
+            const float approach_angle = constrain(distance / 4, 0, 1) * -75;
+            const float target = fix_yaw(approach_angle_calc(AB, pos, approach_angle));
+            Serial.printf("Now (%f,%f), Start (%f,%f) Target (%f,%f), Distance: %f, Approach angle: %f, Target: %f\r\n",
+                            pos.x, pos.y,  start_point.x, start_point.y, target_point.x, target_point.y, 
+                            distance, approach_angle, target);
             // const float target = -90;
             Serial.print("Target: ");
             Serial.println(target);
             Serial.print("Yaw: ");
             Serial.println(yaw);
-            if (millis() - drive_start_ms > 60000 || millis() - last_gps > 1500) {
+
+            bool done = has_passed_B(AB, pos);
+
+            if (millis() - last_gps > 1500 || done) {
                 motor.setBothSpeeds(0);
                 motor.setBothDirections(L298N::Direction::STOP);
                 break;

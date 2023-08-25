@@ -2,7 +2,6 @@
 
 #define RAD_TO_DEG 57.295779513082320876798154814105
 
-
 struct euler_t {
     float yaw;
     float pitch;
@@ -27,8 +26,6 @@ euler_t quaternionToEuler(float qr, float qi, float qj, float qk, bool degrees =
     return ypr;
 }
 
-
-
 struct point {
     float x;
     float y;
@@ -46,7 +43,7 @@ float calc_bearing(line AB) {
     return bearing;
 }
 
-// Returns the 
+// Returns the
 float approach_angle_calc(line AB, point C, float angle) {
     // Determine which side of the line we are on
     float bearing_AB = calc_bearing(AB);
@@ -74,27 +71,38 @@ point perpendicular_intersection(line AB, point C) {
     point D = {0, 0};
     const float m = gradient(AB);
 
-    // Check for vertical line
     if (std::isinf(m)) {
-        D.x = AB.A.x;  // or AB.B.x, since they are the same for a vertical line
+        D.x = AB.A.x;
         D.y = C.y;
         return D;
     }
 
-    // Check for horizontal line
     if (m == 0) {
         D.x = C.x;
-        D.y = AB.A.y;  // or AB.B.y, since they are the same for a horizontal line
+        D.y = AB.A.y;
         return D;
     }
 
-    // For all other cases
     const float m_perp = -1 / m;
 
-    D.x = (m_perp * C.x - m_perp * AB.A.x + AB.A.y - C.y) / (m_perp - m);
-    D.y = m * D.x - m * AB.A.x + AB.A.y;
+    // D.x = (m_perp * C.x - m_perp * AB.A.x + AB.A.y - C.y) / (m_perp - m);
+    // D.y = m * D.x - m * AB.A.x + AB.A.y;
+     // Calculate the y-intercept for the line AB
+    float c = -m * AB.A.x + AB.A.y;
+    
+    // Calculate the y-intercept for the line perpendicular to AB and passing through C
+    float c_perp = -m_perp * C.x + C.y;
+
+    D.x = (c_perp - c) / (m - m_perp);
+    D.y = m * D.x + c;  // Use the y = mx + c formula for line AB
 
     return D;
+}
+
+float perpendicular_distance(line AB, point C) {
+    point D = perpendicular_intersection(AB, C);
+    Serial.printf("P_DIST: D.x: %f, D.y: %f\r\n", D.x, D.y);
+    return sqrt(sq(D.x - C.x) + sq(D.y - C.y));
 }
 
 bool has_passed_B(line AB, point C) {
