@@ -1,12 +1,17 @@
 
+#ifndef RAD_TO_DEG
 #define RAD_TO_DEG 57.295779513082320876798154814105f
+#endif
+#ifndef PI
 #define PI 3.14159265358979323846f
+#endif
 
 struct euler_t {
     float yaw;
     float pitch;
     float roll;
 };
+
 euler_t quaternionToEuler(float qr, float qi, float qj, float qk, bool degrees = false) {
     euler_t ypr;
     float sqr = sq(qr);
@@ -36,6 +41,20 @@ struct line {
     point B;
 };
 
+inline double hyp_tangent(double x, double scale) {
+    return (tanh(x * scale));
+}
+
+inline float fix_yaw(float yaw) {
+    // Get back in range [-180, 180]
+    if (yaw > 180) {
+        yaw -= 360;
+    } else if (yaw < -180) {
+        yaw += 360;
+    }
+    return yaw;
+}
+
 inline float fix_bearing(float bearing) {
     if (bearing < 0) {
         bearing += 360;
@@ -60,7 +79,7 @@ float calc_bearing(line AB) {
     float dy = AB.B.y - AB.A.y;
     float bearing = atan2(dy, dx) * RAD_TO_DEG;
     bearing = -bearing + 90;
-    
+
     return fix_bearing(bearing);
 }
 

@@ -44,19 +44,6 @@ void setup(void) {
     delay(100);
 }
 
-double hyp_tangent(double x, double scale) {
-    return (tanh(x * scale));
-}
-
-float fix_yaw(float yaw) {
-    // Get back in range [-180, 180]
-    if (yaw > 180) {
-        yaw -= 360;
-    } else if (yaw < -180) {
-        yaw += 360;
-    }
-    return yaw;
-}
 
 PID drivePid(0.06, 0.02, 0.005);
 PID turnPid(0.06, 0.02, 0.005);
@@ -108,9 +95,9 @@ enum State {
 };
 volatile State state = INIT;
 
-/*
-    State machine variables
-*/
+/////////////////////////////
+// State machine variables //
+/////////////////////////////
 uint32_t last_imu_reading_ms = 0;
 uint32_t calibrate_drive_start_ms = 0;
 float start_x = 0, start_y = 0;
@@ -135,6 +122,10 @@ volatile float gps_x = 0;
 volatile float gps_y = 0;
 volatile uint32_t last_gps = 0;
 
+/*
+    Loop1 runs on the second core
+    Continually listen for GPS updates
+*/
 void loop1() {
     if (Serial.available()) {
         while (Serial.available()) {
