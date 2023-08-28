@@ -43,7 +43,7 @@ void setup(void) {
 
     Serial.println("BNO08x Found!");
 
-    if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR)) {
+    if (!bno08x.enableReport(SH2_ROTATION_VECTOR)) {
         error("Could not enable game vector");
     }
 
@@ -62,7 +62,7 @@ void loop() {
 
     if (bno08x.wasReset()) {
         Serial.println("Sensor was reset ");
-        if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR)) {
+        if (!bno08x.enableReport(SH2_ROTATION_VECTOR)) {
             error("Could not enable game vector");
         }
     }
@@ -74,15 +74,15 @@ void loop() {
         return;
     }
     digitalWrite(LED_BUILTIN, HIGH);
-    auto rotvec = sensorValue.un.gameRotationVector;
+    auto rotvec = sensorValue.un.rotationVector;
     
-    if (sensorValue.sensorId == SH2_GAME_ROTATION_VECTOR) {
+    if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
         uint32_t interval = millis() - last_report;
         float deltaTime = interval / 1000.0;  // Convert to seconds
 
         last_report = millis();
         auto ypr = quaternionToEuler(rotvec.real, rotvec.i, rotvec.j, rotvec.k, true);
-        const float yaw = ypr.yaw;
+        const float yaw = -ypr.yaw;
         Serial.print("Yaw: ");
         Serial.println(yaw);
     }

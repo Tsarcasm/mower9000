@@ -41,7 +41,7 @@ void setup(void) {
 
     // Serial.println("BNO08x Found!");
 
-    if (!bno08x.enableReport(SH2_ROTATION_VECTOR)) {
+    if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR)) {
         error("Could not enable game vector");
     }
 
@@ -117,6 +117,7 @@ float yaw_diff(float yaw1, float yaw2) {
     return diff;
 }
 
+
 uint32_t last_report = 0;
 
 enum State {
@@ -125,7 +126,8 @@ enum State {
     STRAIGHT,
     CALIBRATE,
     CAL_TURN,
-    CAL_STRAIGHT
+    CAL_STRAIGHT,
+    DONE
 };
 volatile State state = INIT;
 
@@ -177,13 +179,13 @@ void loop1() {
 
 void turn_to_face(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_constants, PIDState &pid_state) {
     // Turn to reduce yaw to zero
-    float error = yaw - target;
+    float error = bearing_diff(yaw, target);
     float controlSpeed = computePID(error, deltaTime / 1000.0f, turnConstants, turnState);
     bool isClockwise = controlSpeed > 0;
     controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
     motor.setBothSpeeds(controlSpeed);
     // Apply the control
-    if (isClockwise) {
+    if (!isClockwise) {
         motor.setDirectionA(L298N::Direction::BACKWARD);
         motor.setDirectionB(L298N::Direction::FORWARD);
     } else {
@@ -194,7 +196,7 @@ void turn_to_face(float target, float yaw, uint32_t deltaTime, PIDConstants &pid
 
 void go_straight(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_constants, PIDState &pid_state) {
     // Drive straight
-    float error = fix_yaw(yaw - target);
+    float error = bearing_diff(yaw, target);
     float controlSpeed = computePID(error, deltaTime / 1000.0f, driveConstants, driveState);
     bool isClockwise = controlSpeed > 0;
     controlSpeed = modified_sigmoid(abs(controlSpeed), 5);
@@ -202,7 +204,7 @@ void go_straight(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_
 
     motor.setBothDirections(L298N::Direction::FORWARD);
     // Apply the control
-    if (isClockwise) {
+    if (!isClockwise) {
         motor.setSpeedA(1 - controlSpeed);
         motor.setSpeedB(1);
     } else {
@@ -213,12 +215,27 @@ void go_straight(float target, float yaw, uint32_t deltaTime, PIDConstants &pid_
 
 
 point start_point = {0, 0};
-point target_point = {-20, -10};
 
-void loop() {
+point path[] = {
+    {3.7, -4.5},
+    {-6.6,-6.6},
+    {-7,7},
+    {0,10},
+    // {3.7, -4.5},
+    // {0, -2.5},
+    // {-5, -2.5},
+    // {-5, 7.5},
+    // {0, 7.5},
+    // {0, -2.5},
+};
+#define NUM_POINTS 4
+
+
+int path_index = 0;
+void loop() { 
     if (bno08x.wasReset()) {
         Serial.println("Sensor was reset ");
-        if (!bno08x.enableReport(SH2_ROTATION_VECTOR)) {
+        if (!bno08x.enableReport(SH2_GAME_ROTATION_VECTOR)) {
             error("Could not enable game vector");
         }
     }
@@ -230,18 +247,21 @@ void loop() {
         return;
     }
 
-    auto rotvec = sensorValue.un.rotationVector;
+    auto rotvec = sensorValue.un.gameRotationVector;
     float yaw = 0;
-    if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+    if (sensorValue.sensorId == SH2_GAME_ROTATION_VECTOR) {
         auto ypr = quaternionToEuler(rotvec.real, rotvec.i, rotvec.j, rotvec.k, true);
         yaw = ypr.yaw;
     } else {
         return;
     }
+    const float raw_yaw_ = yaw;
 
     // Apply the calibrated yaw offset
-    yaw -= calibrated_yaw_offset;
+    yaw = fix_yaw(calibrated_yaw_offset) - yaw;
+    // get yaw back in the range [-180, 180]
     yaw = fix_yaw(yaw);
+    
 
     uint32_t deltaTime = millis() - last_time;
     last_time = millis();
@@ -287,47 +307,50 @@ void loop() {
         */
         case CALIBRATE: {
             // Calculate our heading based on the GPS
-            float dx = end_x - start_x;
-            float dy = end_y - start_y;
-            float heading = atan2(dy, dx) * RAD_TO_DEG;
+            // float dx = end_x - start_x;
+            // float dy = end_y - start_y;
+            // float heading = atan2(dy, dx) * RAD_TO_DEG;
 
-            calibrated_yaw_offset = heading;
+            calibrated_yaw_offset = calc_bearing({{start_x, start_y}, {end_x, end_y}});
             start_point = {gps_x, gps_y};
-
-            Serial.print("Heading: ");
-            Serial.println(heading);
 
             motor.setBothSpeeds(0);
             motor.setBothDirections(L298N::Direction::STOP);
             // Serial.println(yaw);
             state = CAL_TURN;
+            // delay(5000);
             turnState = {0};
         } break;
         /*
         Turn to face the y=1 line
         */
         case CAL_TURN: {
-            const float target = fix_yaw(calc_bearing({start_point, target_point}));
+            const float target = calc_bearing({start_point, path[path_index]});
 
-            if (abs(yaw_diff(yaw, target)) < 8) {
+
+            if (abs(bearing_diff(yaw, target)) < 1) {
                 state = CAL_STRAIGHT;
                 driveState = {0};
                 drive_start_ms = millis();
             }
-            Serial.printf("Now (%f,%f), Target (%f,%f), Target: %f\r\n",
-                            gps_x, gps_y, target_point.x, target_point.y, target);
+            // Serial.printf("Now (%f,%f), Target (%f,%f), Target: %f\r\n",
+            // gps_x, gps_y, target_point.x, target_point.y, target);
+            Serial.printf("Yaw: %f, Target: %f\r\n", yaw, target);
+            // target = 0;
             turn_to_face(target, yaw, deltaTime, turnConstants, turnState);
             break;
         }
 
         case CAL_STRAIGHT: {
-            const line AB = {start_point, target_point};
+            line AB = {path[(path_index - 1) % NUM_POINTS], path[path_index]};
+            const point target_point = path[path_index];
+
             const point pos = {gps_x, gps_y};
             // We want to drive on the y=0 line
             // Calculate the error
             const float distance = perpendicular_distance(AB, pos);
-            const float approach_angle = constrain(distance / 4, 0, 1) * -75;
-            const float target = fix_yaw(approach_angle_calc(AB, pos, approach_angle));
+            const float approach_angle = constrain(distance / 2, 0, 1) * 27;
+            const float target = approach_angle_calc(AB, pos, approach_angle);
             Serial.printf("Now (%f,%f), Start (%f,%f) Target (%f,%f), Distance: %f, Approach angle: %f, Target: %f\r\n",
                             pos.x, pos.y,  start_point.x, start_point.y, target_point.x, target_point.y, 
                             distance, approach_angle, target);
@@ -339,14 +362,26 @@ void loop() {
 
             bool done = has_passed_B(AB, pos);
 
-            if (millis() - last_gps > 1500 || done) {
+            if (done) {
+                path_index = (path_index + 1) % NUM_POINTS;
+                start_point = {gps_x, gps_y};
+                state = CAL_TURN;
+                turnState = {0};
+                break;
+            }
+            if (millis() - last_gps > 1500) {
                 motor.setBothSpeeds(0);
-                motor.setBothDirections(L298N::Direction::STOP);
                 break;
             }
             // go_straight(calculated_yaw, yaw, deltaTime, driveConstants, driveState);
             go_straight(target, yaw, deltaTime, driveConstants, driveState);
             break;
         }
+        case DONE:
+            motor.setBothSpeeds(0);
+            motor.setBothDirections(L298N::Direction::STOP);
+            Serial.printf("Heading: %f, Raw Yaw: %f, Yaw Offset: %f\r\n", yaw, raw_yaw_, calibrated_yaw_offset);
+            delay(1000);
+            break;
     }
 }

@@ -1,6 +1,6 @@
-#include <Arduino.h>
 
-#define RAD_TO_DEG 57.295779513082320876798154814105
+#define RAD_TO_DEG 57.295779513082320876798154814105f
+#define PI 3.14159265358979323846f
 
 struct euler_t {
     float yaw;
@@ -36,24 +36,46 @@ struct line {
     point B;
 };
 
+inline float fix_bearing(float bearing) {
+    if (bearing < 0) {
+        bearing += 360;
+    } else if (bearing > 360) {
+        bearing -= 360;
+    }
+    return bearing;
+}
+
+inline float bearing_diff(float bearing_a, float bearing_b) {
+    float diff = bearing_a - bearing_b;
+    if (diff > 180) {
+        diff -= 360;
+    } else if (diff < -180) {
+        diff += 360;
+    }
+    return diff;
+}
+
 float calc_bearing(line AB) {
     float dx = AB.B.x - AB.A.x;
     float dy = AB.B.y - AB.A.y;
     float bearing = atan2(dy, dx) * RAD_TO_DEG;
-    return bearing;
+    bearing = -bearing + 90;
+    
+    return fix_bearing(bearing);
 }
 
 // Returns the
 float approach_angle_calc(line AB, point C, float angle) {
     // Determine which side of the line we are on
     float bearing_AB = calc_bearing(AB);
-    float bearing_AC = calc_bearing({AB.A, C});
-    float bearing_diff = bearing_AB - bearing_AC;
-    float sign = 0;
-    if (bearing_diff > 0 || bearing_diff < -180) {
+    const line AC = {AB.A, C};
+    float bearing_AC = calc_bearing(AC);
+    // float diff = bearing_AB - bearing_AC;
+    float diff = bearing_diff(bearing_AB, bearing_AC);
+
+    float sign = -1;
+    if (diff > 0 || diff < -180) {
         sign = 1;
-    } else {
-        sign = -1;
     }
     float approach_angle = bearing_AB + (sign * angle);
     return approach_angle;
@@ -87,9 +109,9 @@ point perpendicular_intersection(line AB, point C) {
 
     // D.x = (m_perp * C.x - m_perp * AB.A.x + AB.A.y - C.y) / (m_perp - m);
     // D.y = m * D.x - m * AB.A.x + AB.A.y;
-     // Calculate the y-intercept for the line AB
+    // Calculate the y-intercept for the line AB
     float c = -m * AB.A.x + AB.A.y;
-    
+
     // Calculate the y-intercept for the line perpendicular to AB and passing through C
     float c_perp = -m_perp * C.x + C.y;
 
@@ -101,7 +123,6 @@ point perpendicular_intersection(line AB, point C) {
 
 float perpendicular_distance(line AB, point C) {
     point D = perpendicular_intersection(AB, C);
-    Serial.printf("P_DIST: D.x: %f, D.y: %f\r\n", D.x, D.y);
     return sqrt(sq(D.x - C.x) + sq(D.y - C.y));
 }
 
